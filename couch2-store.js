@@ -1,9 +1,9 @@
 /* Copyright (c) 2016 Mark Tyborowski, MIT License */
-"use strict"
+'use strict'
 
 
 var _ = require('lodash')
-var nano = require('nano')
+var Nano = require('nano')
 
 var internals = {
   name: 'couch2-store',
@@ -19,14 +19,13 @@ function mango (args) {
   query.selector = {}
   for (var qp in q) {
     if (!qp.match(/\$$/)) {
-      if (qp == 'id' && q[qp]._id) query.selector['_id'] = q[qp]._id
-      else if (qp == 'id') query.selector['_id'] = q[qp]
+      if ('id' === qp && q[qp]._id) query.selector['_id'] = q[qp]._id
+      else if ('id' === qp) query.selector['_id'] = q[qp]
       else query.selector[qp] = q[qp]
     }
   }
-  var canon = args.ent.canon$({object:true})
-  var canonical = (canon.base ? canon.base + '_' : '') + canon.name
-  query.selector[internals.basename] = canonical
+  var canon = args.ent.canon$({object: true})
+  query.selector[internals.basename] = (canon.base ? canon.base + '_' : '') + canon.name
 
   if (q.sort$) {
     query.sort = []
@@ -50,20 +49,29 @@ function mango (args) {
 }
 
 
-module.exports = function(opts) {
+function mangolist (args) {
+  if (args.q.native$) return args.q.native$
+  else return mango(args)
+}
+
+
+module.exports = function (opts) {
   var seneca = this
   var desc
+
+  var nano = null
   var db = null
-  var dbinst = null
+
 
   function error (args, err, cb) {
-    if (err && !(err.error && err.error == 'not_found')) {
+    if (err && !('not_found' === err.error)) {
       seneca.log.error('entity', err, { store: internals.name })
       cb(err)
       return true
     }
-    return false
+    else return false
   }
+
 
   function configure (conf, cb) {
     if (conf.basename) {
@@ -72,10 +80,10 @@ module.exports = function(opts) {
     if (conf.dbname) {
       internals.dbname = conf.dbname
     }
-    // db = nano('http://localhost:5984')
-    // dbinst = nano('http://localhost:5984/senecadb')
-    db = nano('http://' + conf.host + ':' + conf.port)
-    dbinst = db.use(conf.dbname)
+    // nano = Nano('http://localhost:5984')
+    // db = Nano('http://localhost:5984/senecadb')
+    nano = Nano('http://' + conf.host + ':' + conf.port)
+    db = nano.use(conf.dbname)
     cb()
   }
 
@@ -84,8 +92,8 @@ module.exports = function(opts) {
     name: internals.name,
 
     close: function (args, cb) {
-      if (dbinst) {
-        dbinst = null
+      if (db) {
+        db = null
       }
       return cb(null)
     },
@@ -93,41 +101,56 @@ module.exports = function(opts) {
 
     save: function (args, cb) {
       var ent = args.ent
-      var entp = {}
-      var fields = ent.fields$()
-      fields.forEach(function (field) {
-        entp[field] = ent[field]
-      })
+      var update = !!ent.id
 
-      var canon = ent.canon$({object:true})
-      var canonical = (canon.base ? canon.base + '_' : '') + canon.name
-      entp[internals.basename] = canonical
+      if (update) {
+        db.get(ent.id, function (err, found) { // get complete doc from db
+          if (!error(args, err, cb)) {
+            if (found) {
+              var entp = {}
+              for (var qp in found) { // populate update structure
+                entp[qp] = found[qp]
+              }
+              var fields = ent.fields$()
+              fields.forEach(function (field) { // override fields that could've changed
+                entp[field] = ent[field]
+              })
 
-      if (!!ent.id) {
-        entp._id = ent.id
-        delete entp.id
-
-        dbinst.insert(entp, function(err, result) {
-            if (!error(args, err, cb)) {
-              ent._rev = result.rev
-              delete ent.id$
-
-              seneca.log.debug('save/update', ent, desc)
-              cb(null, ent)
+              db.insert(entp, function (err, insert) {
+                if (!error(args, err, cb)) {
+                  seneca.log.debug('save/update', ent, desc)
+                  cb(null, ent)
+                }
+              })
             }
+            else { // someone else deleted the doc in meantime
+              delete ent.id
+              update = false
+            }
+          }
         })
       }
-      else {
+
+      if (!update) { // insert of new or previously deleted doc
+        var entp = {}
+
         if (void 0 !== ent.id$) entp._id = ent.id$
 
-        dbinst.insert(entp, function (err, result) {
-            if (!error(args, err, cb)) {
-              ent.id = result.id
-              ent._rev = result.rev
+        var fields = ent.fields$()
+        fields.forEach(function (field) {
+          entp[field] = ent[field]
+        })
 
-              seneca.log.debug('save/insert', ent, desc)
-              cb(null, ent)
-            }
+        var canon = ent.canon$({object: true})
+        entp[internals.basename] = (canon.base ? canon.base + '_' : '') + canon.name
+
+        db.insert(entp, function (err, insert) {
+          if (!error(args, err, cb)) {
+            ent.id = insert.id
+
+            seneca.log.debug('save/insert', ent, desc)
+            cb(null, ent)
+          }
         })
       }
     },
@@ -138,8 +161,8 @@ module.exports = function(opts) {
       mangoq.limit = 1
       var opts = { db: internals.dbname, path: '_find', body: mangoq, method: 'POST' }
 
-        //too lazy to have short-circuit query when only id is specified, maybe later
-        db.request(opts, function(err, entp) {
+      // too lazy to have short-circuit query when only id is specified, maybe later
+      nano.request(opts, function (err, entp) {
         if (!error(args, err, cb)) {
           var fent = null
 
@@ -159,10 +182,10 @@ module.exports = function(opts) {
 
 
     list: function (args, cb) {
-      var mangoq = mango(args)
+      var mangoq = mangolist(args)
       var opts = { db: internals.dbname, path: '_find', body: mangoq, method: 'POST' }
 
-      db.request(opts, function(err, entp) {
+      nano.request(opts, function (err, entp) {
         if (!error(args, err, cb)) {
           var list = []
 
@@ -185,62 +208,63 @@ module.exports = function(opts) {
     remove: function (args, cb) {
       var mangoq = mango(args)
       var load = _.isUndefined(args.q.load$) ? true : args.q.load$ // default true
+      var all = args.q.all$ // default false, set for clarity
 
       var opts = { db: internals.dbname, path: '_find', body: mangoq, method: 'POST' }
-      // unless set or all, default to 1
-      if (_.isUndefined(mangoq.limit)) mangoq.limit = (!args.q.all$ ? 1 : Number.MAX_SAFE_INTEGER )
+      // either delete all or just one, reset limit appropriately
+      mangoq.limit = (all ? Number.MAX_SAFE_INTEGER : 1)
 
       // not very happy about breaking transaction acidity, but...
-      db.request(opts, function(err, entp) {
-          if (!error(args, err, cb)) {
-            if (entp) {
-              var fent = null
-              var deleteq = {}
-              deleteq.docs = []
+      nano.request(opts, function (err, entp) {
+        if (!error(args, err, cb)) {
+          if (entp && entp.docs && entp.docs.length > 0) {
+            var fent = null
+            var deleteq = {}
+            deleteq.docs = []
 
-              entp.docs.forEach(function (doc, index) {
-                  if (index == 1 && mangoq.limit == 1 && load) {
-                    fent = args.qent.make$(doc)
-                    fent.id = fent._id
-                    delete fent._id
-                  }
+            entp.docs.forEach(function (doc) {
+              if (!all && load) { // all takes presedence
+                fent = args.qent.make$(doc)
+                fent.id = fent._id
+                delete fent._id
+              }
 
-                  var ent = {}
-                  ent._id = doc._id
-                  ent._rev = doc._rev
-                  ent._deleted = true
-                  deleteq.docs.push(ent)
-               })
+              var ent = {}
+              ent._id = doc._id
+              ent._rev = doc._rev
+              ent._deleted = true
+              deleteq.docs.push(ent)
+            })
 
-              var opts_d = { db: internals.dbname, path: '_bulk_docs', body: deleteq, method: 'POST' }
-              db.request(opts_d, function(err) {
-                  if (fent) cb(err, fent)
-                  else cb(err)
-              })
-            }
-          }
-      })
-
-    },
-
-    native: function (args, cb) {
-      var opts = { db: internals.dbname, path: '_find', method: 'POST' }
-      opts.body = args.q.native$
-
-      db.request(opts, function(err, entp) {
-          if (!error(args, err, cb)) {
-            cb(null, db)
+            var opts_d = { db: internals.dbname, path: '_bulk_docs', body: deleteq, method: 'POST' }
+            nano.request(opts_d, function (err) {
+              if (all) { // again, all takes precedence
+                seneca.log.debug('remove/all', args.q, desc)
+                cb(err)
+              }
+              else {
+                seneca.log.debug('remove/one', args.q, fent, desc)
+                cb(err, fent)
+              }
+            })
           }
           else {
-            cb(err)
+            seneca.log.debug('remove/none', args.q, desc)
+            cb(null)
           }
+        }
       })
+    },
+
+
+    native: function (args, cb) {
+      cb(null, db, nano, internals.dbname)
     }
   }
 
 
-  var meta = seneca.store.init(seneca, opts, store);
-  desc = meta.desc;
+  var meta = seneca.store.init(seneca, opts, store)
+  desc = meta.desc
 
 
   seneca.add({ init: store.name, tag: meta.tag }, function (args, done) {

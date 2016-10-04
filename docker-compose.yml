@@ -1,0 +1,4 @@
+couchdb:
+  build: ./docker
+  ports:
+    - "5984:5984"

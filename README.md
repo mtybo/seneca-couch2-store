@@ -21,7 +21,8 @@ Where in doubt, author referred to [seneca-mongo-store] behaviour.
 To install, simply use npm. Remember you will need to install [Seneca] separately.
 
 ```sh
-npm install seneca
+npm install seneca seneca-entity
+npm install seneca-basic #for versions greater than 3.0.0
 npm install seneca-couch2-store
 ```
 
@@ -35,6 +36,8 @@ seneca.use('couch2-store', {
   dbname: 'senecadb',
   basename: 'seneca_type'
 })
+.use('basic')
+.use('entity')
 
 seneca.ready(function () {
   var apple = seneca.make$('fruit')
